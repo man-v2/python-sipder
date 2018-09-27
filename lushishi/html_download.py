@@ -12,12 +12,12 @@ class DownloadHtml:
     def __init__(self, domain):
         self.session = requests.session()
         self.session.get(domain)
-        self.new_data = set()
 
         self.mongo = MongoClient('127.0.0.1', 27017)
         self.mongo_db = self.mongo['lushishi']
         self.domain = domain
 
+    # 获取网页内容，同时解决中文乱码
     def download_html(self, url):
         req = self.session.get(url)
         if req.encoding == 'ISO-8859-1':
@@ -53,9 +53,10 @@ class DownloadHtml:
         # type_coll.remove()
         type_coll.insert(types)
 
+    # 解析视频详情页，并保存入库
     def parser_detail_html(self, data, name):
         soup = BeautifulSoup(data, 'html.parser')
-        # print soup.prettify()
+        print soup.prettify()
         tags = soup.find_all('div', class_='content1 mtop')
         coll = self.mongo_db.video_detail
 
@@ -93,7 +94,20 @@ class DownloadHtml:
                         if '播放' in txt:
                             cnt['play'] = self.domain+a['href']
 
-                coll.insert(cnt)
+                print cnt
+                # coll.insert(cnt)
+
+    # 解析播放页
+    def parse_player_html(self, data):
+        soup = BeautifulSoup(data, 'html.parser')
+        # print soup.prettify()
+
+        js_url = None
+        # 视频真实地址
+        for row in soup.find_all('div', id='player'):
+            js_url = row.find('script')['src']
+        # print self.domain+js_url
+        return self.run_js(self.domain+js_url)
 
     # 分析页数
     def parse_page(self, data):
@@ -117,18 +131,6 @@ class DownloadHtml:
             print i
         # return res[0]
 
-    def update_item_download_url(self):
-        video_detail = self.mongo_db.video_detail
-        items = video_detail.find()
-        for item in items:
-            print item['name'], item['url']
-            url = self.get_download_url(item['url'])
-            if url is None:
-                continue
-
-            print item['_id'], url
-            video_detail.update({'_id': item['_id']}, {'$set': {'down_url': url}})
-
     def get_download_url(self, url):
         # url = 'http://www.lushishi30.com/jr/50138'
         data = self.download_html(url)
@@ -144,12 +146,6 @@ class DownloadHtml:
         with open(path, 'a') as f:
             f.write(data)
 
-    def parse_player(self, data):
-        soup = BeautifulSoup(data, 'html.parser')
-        tags = soup.find_all('div', class_='listtxt')
-        for link in tags:
-            print link
-
     def download_video_detail(self):
         item_coll = self.mongo_db.item
         items = item_coll.find()
@@ -157,9 +153,8 @@ class DownloadHtml:
             url = i['url']
             name = i['name']
             page = int(i['page'])
-
+            page = 1
             print '\n spider %s' % name
-
             for p in range(page):
                 print '爬第：%d页' % p
                 if p > 1:
@@ -172,42 +167,80 @@ class DownloadHtml:
                     self.parser_detail_html(data, name)
 
     def download_single_type(self):
-        # /sj/26777/player.html?26777-0-1
-        data = self.download_html('http://www.lushishi30.com/sj/26777/player.html?26777-0-1')
+        url = 'http://www.lushishi30.com/sj'
+        data = self.download_html(url)
         soup = BeautifulSoup(data, 'html.parser')
-        print soup.prettify()
-        # 详情页
-        for row in soup.find_all('div', class_='contentList'):
+        # print soup.prettify()
+
+        # Body
+        # for row in soup.find_all('div', class_='wrap'):
+        #     print row
+
+        # Page
+        for row in soup.find_all('div', class_='page'):
             print row
+
+        # 详情页
+        # for row in soup.find_all('div', class_='contentList'):
+        #     print row
 
         # 视频播放页
-        for row in soup.find_all('div', class_='wrap'):
-            print row
-
+        # for row in soup.find_all('div', class_='wrap'):
+        #     print row
         # 视频真实地址
-        for row in soup.find_all('div', id='player'):
-            print row
 
-    def run_js(self):
-        resp = self.session.get('http://www.lushishi30.com/playdata/153/26777.js?11027.7')
+    # 解析网页直播地址
+    def run_js(self, url):
+        resp = self.session.get(url)
         cnt = resp.content
         list = []
 
-        if 'ckm3u8' in cnt:
-            ckm = cnt.split(',')[1].replace('[', '').replace(']', '').replace('\'', '')
-            ckm_url = ckm[ckm.find('$')+1:]
-            list.append(ckm_url)
-        elif 'xfplay' in cnt:
-            xfplay = cnt.split(',')
-            for row in xfplay:
-                if '$xfplay' in row:
-                    xfplay_url = row.replace('[', '').replace(']', '').replace('\'', '')
-                    xf_url = xfplay_url[xfplay_url.find('$xfplay')+1:]
-                    list.append(xf_url)
-        print list
+        real_url = cnt[cnt.find(',[') + 2: cnt.find(']]')]
+        urls = real_url.split(',')
+        for i in urls:
+            res = i[i.find('$') + 1: i.rfind('$')]
+            list.append(res)
         return list
+
+    def update_vedio_palyer_url(self):
+        video_detail = self.mongo_db.video_detail
+        items = ""
+        param = dict()
+        for i in items:
+            param['type'] = i
+            print param
+            items = video_detail.find(param)
+
+            for item in items:
+                print item['type'], item['name'], item['play'], item['_id']
+                data = self.download_html(item['play'])
+                res = self.parse_player_html(data)
+                print res
+                video_detail.update({'_id': item['_id']}, {'$set': {'down_url': ','.join(res).decode('unicode_escape')}})
+
+    def do_test(self):
+        video_detail = self.mongo_db.video_detail
+        items = video_detail.find({'type': '经典三级'})
+        print 'start'
+        list = []
+        for item in items:
+            if item['name'] in list:
+                continue
+
+            list.append(item['name'])
+
+            str = item['type'] +','+ item['name']+','+item['down_url']+'\n'
+            print str
+            self.write_file('test-sj.txt', str)
+
+        print 'finishi'
+
+    def write_file(self, path, data):
+        with open(path, 'a') as f:
+            f.write(data)
 
 if __name__ == '__main__':
     obj = DownloadHtml('http://www.lushishi30.com')
-    # obj.download_single_type()
-    obj.run_js()
+    obj.download_single_type()
+    # obj.download_video_detail()
+    # obj.do_test()
